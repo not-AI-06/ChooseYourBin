@@ -1,6 +1,5 @@
-streamlit>=1.30.0
-ultralytics>=8.0.0
+streamlit>=1.30
+ultralytics>=8.0
 pillow
 numpy
 pandas
-opencv-python-headless
