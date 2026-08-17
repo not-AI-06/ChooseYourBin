@@ -1,0 +1,5 @@
+streamlit>=1.30
+ultralytics>=8.0
+pillow
+numpy
+pandas
