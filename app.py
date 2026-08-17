@@ -11,7 +11,8 @@ Run with:
     streamlit run app.py
 
 Place the trained weights file "best.pt" in the same folder as this script,
-or update MODEL_PATH below.
+or update MODEL_PATH below. A .streamlit/config.toml is included alongside
+this file to keep the interface on a consistent, readable light theme.
 """
 
 import io
@@ -21,10 +22,13 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 import streamlit as st
-from PIL import Image
-from ultralytics import YOLO
-#Comment looks like this
+from PIL import Image, ImageDraw
 
+try:
+    from ultralytics import YOLO
+except ImportError:
+    st.error("The 'ultralytics' package is not installed. Run: pip install ultralytics")
+    st.stop()
 
 
 # --------------------------------------------------------------------------------
@@ -92,6 +96,31 @@ WASTE_BIN_MAP = {
 }
 
 
+def hex_to_rgb(hex_color: str):
+    hex_color = hex_color.lstrip("#")
+    return tuple(int(hex_color[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def contrast_text_color(rgb):
+    r, g, b = [c / 255 for c in rgb]
+    luminance = 0.299 * r + 0.587 * g + 0.114 * b
+    return "#1B1B1B" if luminance > 0.55 else "#FFFFFF"
+
+
+def get_bin_details(class_name: str):
+    entry = WASTE_BIN_MAP.get(class_name)
+    if entry is None:
+        return None
+    bin_name = entry["bin"]
+    bin_info = BIN_INFO[bin_name]
+    return {
+        "bin_name": bin_name,
+        "bin_full_name": bin_info["full_name"],
+        "bin_color": bin_info["color"],
+        "note": entry["note"],
+    }
+
+
 # --------------------------------------------------------------------------------
 # PAGE CONFIGURATION AND STYLE
 # --------------------------------------------------------------------------------
@@ -105,17 +134,33 @@ st.set_page_config(
 st.markdown(
     """
     <style>
+    html, body, [class*="css"]  {
+        color: #1B1B1B !important;
+    }
     .stApp {
-        background-color: #F4F6F5;
+        background-color: #FFFFFF;
     }
     section[data-testid="stSidebar"] {
-        background-color: #EDEFEE;
+        background-color: #EEF2F0;
+    }
+    section[data-testid="stSidebar"] * {
+        color: #1B1B1B !important;
+    }
+    h1, h2, h3, h4, p, label, span, div {
+        color: #1B1B1B;
+    }
+    .card {
+        background-color: #FAFAF9;
+        border: 1px solid #DDE3E0;
+        border-radius: 12px;
+        padding: 16px 18px;
+        margin-bottom: 12px;
     }
     .bin-card {
         padding: 18px 20px;
         border-radius: 10px;
-        color: white;
         margin-bottom: 10px;
+        border: 1px solid rgba(0,0,0,0.08);
     }
     .bin-card h3 {
         margin: 0 0 6px 0;
@@ -125,9 +170,38 @@ st.markdown(
         font-size: 0.95rem;
     }
     .result-header {
-        font-size: 1.4rem;
+        font-size: 1.3rem;
         font-weight: 700;
         margin-bottom: 4px;
+    }
+    .input-help {
+        background-color: #EEF2F0;
+        border-left: 4px solid #2E7D32;
+        border-radius: 6px;
+        padding: 10px 14px;
+        font-size: 0.92rem;
+        margin-bottom: 10px;
+    }
+    .stButton>button, .stDownloadButton>button {
+        background-color: #2E7D32;
+        color: #FFFFFF !important;
+        border-radius: 8px;
+        border: none;
+        padding: 0.5em 1.2em;
+        font-weight: 600;
+    }
+    .stButton>button:hover, .stDownloadButton>button:hover {
+        background-color: #1B5E20;
+        color: #FFFFFF !important;
+    }
+    button[data-baseweb="tab"] {
+        border-radius: 8px 8px 0 0;
+        font-weight: 600;
+    }
+    div[data-testid="stFileUploaderDropzone"] {
+        background-color: #F5F7F6;
+        border: 1.5px dashed #2E7D32;
+        border-radius: 10px;
     }
     </style>
     """,
@@ -171,11 +245,12 @@ st.sidebar.write(
 st.sidebar.markdown("---")
 st.sidebar.subheader("Bin Classification Reference")
 for bin_name, info in BIN_INFO.items():
+    text_color = contrast_text_color(hex_to_rgb(info["color"]))
     st.sidebar.markdown(
         f"""
         <div class="bin-card" style="background-color:{info['color']};">
-            <h3>{bin_name} Bin</h3>
-            <p>{info['description']}</p>
+            <h3 style="color:{text_color};">{bin_name} Bin</h3>
+            <p style="color:{text_color};">{info['description']}</p>
         </div>
         """,
         unsafe_allow_html=True,
@@ -210,87 +285,145 @@ if model is None:
     )
     st.stop()
 
-input_method = st.radio("Choose input method", ["Upload Image", "Take Photograph"], horizontal=True)
+tab_upload, tab_camera = st.tabs(["Upload Image", "Take Photograph"])
 
 image_source = None
-if input_method == "Upload Image":
-    uploaded_file = st.file_uploader("Upload an image of the waste item", type=["jpg", "jpeg", "png"])
+
+with tab_upload:
+    st.markdown(
+        '<div class="input-help">Use this tab to choose an existing photo of the waste item from your device '
+        'gallery or files (JPG or PNG).</div>',
+        unsafe_allow_html=True,
+    )
+    uploaded_file = st.file_uploader("Select an image file", type=["jpg", "jpeg", "png"], key="uploader")
     if uploaded_file is not None:
         image_source = Image.open(uploaded_file).convert("RGB")
-else:
-    camera_file = st.camera_input("Take a photograph of the waste item")
+
+with tab_camera:
+    st.markdown(
+        '<div class="input-help">Use this tab to capture a single live photograph using your device camera. '
+        'This takes a still photo only, not a video recording.</div>',
+        unsafe_allow_html=True,
+    )
+    camera_file = st.camera_input("Capture a photograph", key="camera")
     if camera_file is not None:
         image_source = Image.open(camera_file).convert("RGB")
+
+
+# --------------------------------------------------------------------------------
+# CUSTOM ANNOTATION - BOXES/MASKS COLORED BY BIN CATEGORY
+# --------------------------------------------------------------------------------
+
+def annotate_image(pil_image, result, model, unmapped_color="#757575"):
+    img = pil_image.copy().convert("RGB")
+    draw = ImageDraw.Draw(img, "RGBA")
+
+    boxes = result.boxes
+    masks = result.masks
+
+    for idx, box in enumerate(boxes):
+        cls_id = int(box.cls[0])
+        class_name = model.names[cls_id]
+        conf = float(box.conf[0])
+
+        bin_details = get_bin_details(class_name)
+        color_hex = bin_details["bin_color"] if bin_details else unmapped_color
+        rgb = hex_to_rgb(color_hex)
+
+        x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+
+        if masks is not None and idx < len(masks.xy):
+            polygon = [tuple(point) for point in masks.xy[idx]]
+            if len(polygon) >= 3:
+                draw.polygon(polygon, outline=rgb + (255,), fill=rgb + (70,))
+        else:
+            draw.rectangle([x1, y1, x2, y2], outline=rgb, width=4)
+
+        label = f"{class_name} {conf * 100:.0f}%"
+        try:
+            bbox = draw.textbbox((0, 0), label)
+            text_w, text_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        except Exception:
+            text_w, text_h = len(label) * 7, 14
+
+        label_y = max(y1 - text_h - 8, 0)
+        draw.rectangle([x1, label_y, x1 + text_w + 10, label_y + text_h + 8], fill=rgb + (235,))
+        draw.text((x1 + 5, label_y + 3), label, fill=contrast_text_color(rgb))
+
+    return img
 
 
 # --------------------------------------------------------------------------------
 # INFERENCE AND RESULTS
 # --------------------------------------------------------------------------------
 
-def get_bin_details(class_name: str):
-    entry = WASTE_BIN_MAP.get(class_name)
-    if entry is None:
-        return None
-    bin_name = entry["bin"]
-    bin_info = BIN_INFO[bin_name]
-    return {
-        "bin_name": bin_name,
-        "bin_full_name": bin_info["full_name"],
-        "bin_color": bin_info["color"],
-        "note": entry["note"],
-    }
-
-
 if image_source is not None:
-    col1, col2 = st.columns([1, 1])
-
-    with col1:
-        st.subheader("Input Image")
-        st.image(image_source, use_container_width=True)
-
     with st.spinner("Analysing image..."):
         results = model.predict(source=np.array(image_source), conf=confidence_threshold, verbose=False)
 
     result = results[0]
-
-    with col2:
-        st.subheader("Detection Result")
-        annotated = result.plot()  # returns BGR numpy array with boxes drawn
-        annotated_rgb = annotated[:, :, ::-1]
-        st.image(annotated_rgb, use_container_width=True)
-
     boxes = result.boxes
+
+    st.markdown("---")
+    col_input, col_annotated, col_bin = st.columns([1, 1, 1])
+
+    with col_input:
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.subheader("Input Image")
+        st.image(image_source, use_container_width=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
     if boxes is None or len(boxes) == 0:
-        st.warning("No waste item could be confidently identified in this image. Try a clearer photograph or lower the confidence threshold.")
+        with col_annotated:
+            st.markdown('<div class="card">', unsafe_allow_html=True)
+            st.subheader("Detected Waste")
+            st.image(image_source, use_container_width=True)
+            st.markdown("</div>", unsafe_allow_html=True)
+        with col_bin:
+            st.markdown('<div class="card">', unsafe_allow_html=True)
+            st.subheader("Disposal Guidance")
+            st.warning("No waste item could be confidently identified. Try a clearer photograph or lower the confidence threshold.")
+            st.markdown("</div>", unsafe_allow_html=True)
     else:
+        annotated_img = annotate_image(image_source, result, model)
+
+        with col_annotated:
+            st.markdown('<div class="card">', unsafe_allow_html=True)
+            st.subheader("Detected Waste")
+            st.image(annotated_img, use_container_width=True)
+            st.caption("Box or outline color matches the recommended bin color.")
+            st.markdown("</div>", unsafe_allow_html=True)
+
         detections = []
         for box in boxes:
             cls_id = int(box.cls[0])
             class_name = model.names[cls_id]
             conf = float(box.conf[0])
             detections.append({"class": class_name, "confidence": conf})
-
         detections.sort(key=lambda d: d["confidence"], reverse=True)
         top_detection = detections[0]
-
         bin_details = get_bin_details(top_detection["class"])
 
-        st.markdown("---")
-        st.markdown(f"<div class='result-header'>Identified Waste: {top_detection['class']}</div>", unsafe_allow_html=True)
-        st.write(f"Confidence: {top_detection['confidence'] * 100:.1f} percent")
+        with col_bin:
+            st.markdown('<div class="card">', unsafe_allow_html=True)
+            st.subheader("Disposal Guidance")
+            st.markdown(f"<div class='result-header'>{top_detection['class']}</div>", unsafe_allow_html=True)
+            st.write(f"Confidence: {top_detection['confidence'] * 100:.1f} percent")
 
-        if bin_details is None:
-            st.warning("No bin mapping is defined for this class yet.")
-        else:
-            st.markdown(
-                f"""
-                <div class="bin-card" style="background-color:{bin_details['bin_color']};">
-                    <h3>{bin_details['bin_full_name']}</h3>
-                    <p>{bin_details['note']}</p>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+            if bin_details is None:
+                st.warning("No bin mapping is defined for this class yet.")
+            else:
+                text_color = contrast_text_color(hex_to_rgb(bin_details["bin_color"]))
+                st.markdown(
+                    f"""
+                    <div class="bin-card" style="background-color:{bin_details['bin_color']};">
+                        <h3 style="color:{text_color};">{bin_details['bin_full_name']}</h3>
+                        <p style="color:{text_color};">{bin_details['note']}</p>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            st.markdown("</div>", unsafe_allow_html=True)
 
         if len(detections) > 1:
             with st.expander("All detected items in this image"):
@@ -335,15 +468,17 @@ st.subheader("Upload History")
 if not st.session_state.history:
     st.info("No images have been analysed yet in this session.")
 else:
-    for i, record in enumerate(st.session_state.history):
+    for record in st.session_state.history:
         hist_col1, hist_col2 = st.columns([1, 4])
         with hist_col1:
             st.image(record["thumbnail"], width=100)
         with hist_col2:
+            st.markdown('<div class="card">', unsafe_allow_html=True)
             st.markdown(f"**{record['class']}**  |  Confidence: {record['confidence']} percent")
             st.write(f"Recommended Bin: {record['bin']}")
             st.write(f"Note: {record['note']}")
             st.caption(record["timestamp"])
+            st.markdown("</div>", unsafe_allow_html=True)
         st.markdown("---")
 
     history_df = pd.DataFrame(
