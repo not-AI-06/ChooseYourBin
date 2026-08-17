@@ -23,12 +23,8 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 from PIL import Image, ImageDraw
+from ultralytics import YOLO
 
-try:
-    from ultralytics import YOLO
-except ImportError:
-    st.error("The 'ultralytics' package is not installed. Run: pip install ultralytics")
-    st.stop()
 
 
 # --------------------------------------------------------------------------------
